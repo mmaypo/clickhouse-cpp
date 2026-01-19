@@ -1,0 +1,14 @@
+<clickhouse>
+  <tcp_port_secure>9440</tcp_port_secure>
+
+  <openSSL>
+    <server>
+      <certificateFile>/etc/clickhouse-server/star_liveaction_com.pem</certificateFile>
+      <privateKeyFile>/etc/clickhouse-server/star_liveaction_com.key</privateKeyFile>
+
+      <!-- Require and validate client certificates -->
+      <verificationMode>strict</verificationMode>
+      <caConfig>/etc/clickhouse-server/ch_client_ca.crt</caConfig>
+    </server>
+  </openSSL>
+</clickhouse>

@@ -20,11 +20,9 @@
 	* [Changes to clickhouse-server config.xml](#changes-to-clickhouse-server-configxml)
 		* [Next steps checklist (commands)](#next-steps-checklist-commands)
 	* [OpenSSL CSR/signing commands and the corresponding ClickHouse users.d mapping for SAN URI](#openssl-csrsigning-commands-and-the-corresponding-clickhouse-usersd-mapping-for-san-uri)
-		* [Target standard (services, SAN URI)](#target-standard-services-san-uri)
-		* [1) Issue a client cert with SAN URI (OpenSSL)](#1-issue-a-client-cert-with-san-uri-openssl)
-		* [2) Configure ClickHouse to require client certs (mTLS)](#2-configure-clickhouse-to-require-client-certs-mtls)
-		* [3) Map SAN URI to a ClickHouse user](#3-map-san-uri-to-a-clickhouse-user)
-		* [4) Client-side (your clickhouse-cpp/OpenSSL client)](#4-client-side-your-clickhouse-cppopenssl-client)
+		* [1) Configure ClickHouse to require client certs (mTLS)](#2-configure-clickhouse-to-require-client-certs-mtls)
+		* [2) Map SAN URI to a ClickHouse user](#3-map-san-uri-to-a-clickhouse-user)
+		* [3) Client-side (your clickhouse-cpp/OpenSSL client)](#4-client-side-your-clickhouse-cppopenssl-client)
 	* [template script to issue/revoke/rotate certs](#template-script-to-issuerevokerotate-certs)
 		* [What you deploy to ClickHouse](#what-you-deploy-to-clickhouse)
 		* [Client-side: clickhouse-cpp + OpenSSL (present client cert + key)](#client-side-clickhouse-cpp--openssl-present-client-cert--key)
@@ -245,72 +243,15 @@ int main() {
         ssl.SetExternalSSLContext(ctx.get());
 
         opts.SetSSLOptions(ssl);
-
-        // ---- Create client and run a simple query ----
-        Client client(opts);
-
-        client.Execute("CREATE TABLE IF NOT EXISTS default.numbers (id UInt64, name String) ENGINE = Memory");
-
-        /// Insert some values.
-        {
-            Block block;
-
-            auto id = std::make_shared<ColumnUInt64>();
-            id->Append(1);
-            id->Append(7);
-
-            auto name = std::make_shared<ColumnString>();
-            name->Append("one");
-            name->Append("seven");
-
-            block.AppendColumn("id"  , id);
-            block.AppendColumn("name", name);
-
-            client.Insert("default.numbers", block);
-        }
-
-        /// Select values inserted in the previous step.
-        client.Select("SELECT id, name FROM default.numbers", [] (const Block& block)
-            {
-                for (size_t i = 0; i < block.GetRowCount(); ++i) {
-                    std::cout << block[0]->As<ColumnUInt64>()->At(i) << " "
-                            << block[1]->As<ColumnString>()->At(i) << "\n";
-                }
+        
+        // Test connectivity
+        client.Execute("SELECT 1", [](const clickhouse::Block& block) {
+            for (size_t i = 0; i < block.GetRowCount(); ++i) {
+                std::cout << "Successfully read row " << i << " from ClickHouse." << std::endl;
             }
-        );
+        });
 
-        /// Select values inserted in the previous step using external data feature
-        /// See https://clickhouse.com/docs/engines/table-engines/special/external-data
-        {
-            Block block1, block2;
-            auto id = std::make_shared<ColumnUInt64>();
-            id->Append(1);
-            block1.AppendColumn("id"  , id);
-
-            auto name = std::make_shared<ColumnString>();
-            name->Append("seven");
-            block2.AppendColumn("name", name);
-
-            const std::string _1 = "_1";
-            const std::string _2 = "_2";
-
-            const ExternalTables external = {{_1, block1}, {_2, block2}};
-            client.SelectWithExternalData("SELECT id, name FROM default.numbers where id in (_1) or name in (_2)",
-                                        external, [] (const Block& block)
-                {
-                    for (size_t i = 0; i < block.GetRowCount(); ++i) {
-                        std::cout << block[0]->As<ColumnUInt64>()->At(i) << " "
-                                << block[1]->As<ColumnString>()->At(i) << "\n";
-                    }
-                }
-            );
-        }
-
-        /// Delete table.
-        client.Execute("DROP TABLE default.numbers");
-
-        return 0;
-
+        std::cout << "Connection and query successful!" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "ClickHouse error: " << e.what() << "\n";
         return 1;
@@ -356,42 +297,67 @@ This aligns with ClickHouse’s recommended “self-signed CA for testing / inte
 
 <br> 
 
-We will use SAN URI. Example: service svc_livewire:  
+We will use SAN URI, and let's assume service is named "svc_livewire". The steps are:
+1. create a private service key
+2. create the corresponding client cert
+3. sign the cert with client CA
+4. distribute svc_livewire.crt (client cert) and svc_livewire.key (client private key)to the service
 
-```
+Recommendation is to Issue client certs with:
+
+* CN=\<service-name\> (for readability)  
+* SAN URI=spiffe://bluecatnetworks.com/clickhouse/\<env\>/\<service-name\> (for authentication)  
+* optionally SAN DNS=\<service\>.\<env\>.bluecatnetworks.com (if useful)  
+
+So, set CN to something readable (e.g., svc_livewire), but ClickHouse auth will key off the SAN URI. Use a URI identity like:
+
+* spiffe://bluecatnetworks.com/clickhouse/\<env\>/\<service\>
+
+Example:
+
+* spiffe://bluecatnetworks.com/clickhouse/prod/svc_livewire
+
+<br>
+
+On your CA host (where ch_client_ca.key and ch_client_ca.crt live):
+
+```bash
+# Step 1, client private service key
+ENV="prod"
 SERVICE="svc_livewire"
+URI="spiffe://bluecatnetworks.com/clickhouse/${ENV}/${SERVICE}"
 
-# private key
+# Key
 openssl genrsa -out "${SERVICE}.key" 2048
 chmod 600 "${SERVICE}.key"
 
-# CSR with SAN (URI + DNS examples; keep what you need)
+# Step 2, CSR with SAN URI
 openssl req -new -key "${SERVICE}.key" \
   -subj "/CN=${SERVICE}" \
   -out "${SERVICE}.csr" \
-  -addext "subjectAltName = URI:spiffe://bluecatnetworks.com/clickhouse/${SERVICE},DNS:${SERVICE}.bluecatnetworks.com" \
+  -addext "subjectAltName = URI:${URI}" \
   -addext "extendedKeyUsage = clientAuth"
-
 ```
-
-<br> 
 
 Sign it with your client CA:  
 
-```bash
+```
+# Step 3, sign the CSR
 openssl x509 -req -in "${SERVICE}.csr" \
   -CA ch_client_ca.crt -CAkey ch_client_ca.key -CAcreateserial \
-  -out "${SERVICE}.crt" -days 825 -sha256
-chmod 644 "${SERVICE}.crt"
+  -out "${SERVICE}.crt" -days 825 -sha256 \
+  -copy_extensions copy
 
+chmod 644 "${SERVICE}.crt"
 ```
 
-Artifacts to distribute to the service:
+Verify the SAN URI is present:
 
-* $\{SERVICE\}.crt (client cert)  
-* $\{SERVICE\}.key (client private key)  
+> openssl x509 -in "svc_livewire.crt" -noout -subject -ext subjectAltName
 
-<br>
+
+You should see URI:spiffe://bluecatnetworks.com/clickhouse/prod/svc_livewire.
+
 
 ## 3) Configure ClickHouse server to require client certs (mTLS)  
 
@@ -420,7 +386,7 @@ Create /etc/clickhouse-server/config.d/mtls.xml:
 
 ```
 
-Operationally, if you require client certs, ensure clients can’t bypass mTLS by connecting to plain tcp_port (9000). Many teams simply firewall/disable the insecure port.
+As we require client certs, ensure clients can’t bypass mTLS by connecting to plain tcp_port (9000). Many teams simply firewall/disable the insecure port.
 
 Restart:  
 > sudo systemctl restart clickhouse-server  
@@ -516,7 +482,7 @@ If you use a pinned bundle you control, this trust stays stable even if the OS C
 
 ## Changes to clickhouse-server config.xml
 
-To require client certificates (mTLS) on the secure TCP port / HTTPS, you only need to change two things in the existing plain (non-mTLS) <openSSL><server> block:
+To require client certificates (mTLS) on the secure TCP port / HTTPS, you only need to change two things in the existing plain (non-mTLS) \<openSSL><server\> block:
 
 switch verification from none to strict (so the server requires and validates client certs)
 
@@ -531,7 +497,7 @@ Why set loadDefaultCAFile to false on the server? For mTLS, you typically want t
 
 **Operational notes**
 
-This change enforces client certs on all TLS listeners using this <server> context (secure native TCP and HTTPS, as your comment notes). If you want mTLS only on one interface and not the other, you’ll need separate TLS contexts (more involved).
+This change enforces client certs on all TLS listeners using this \<server\> context (secure native TCP and HTTPS, as your comment notes). If you want mTLS only on one interface and not the other, you’ll need separate TLS contexts (more involved).
 
 You still need to map the client cert to a ClickHouse user (CN/SAN mapping) in users.d/*.xml or via SQL auth, otherwise the TLS handshake may succeed but the user may still not be authorized as intended.
 
@@ -555,73 +521,15 @@ This should fail once verificationMode is strict (because no client cert is pres
 
 ## OpenSSL CSR/signing commands and the corresponding ClickHouse users.d mapping for SAN URI   
 
-### Target standard (services, SAN URI)
-
-Recommendation is to Issue client certs with:
-
-* CN=\<service-name\> (for readability)  
-* SAN URI=spiffe://bluecatnetworks.com/clickhouse/\<env\>/\<service-name\> (for authentication)  
-* optionally SAN DNS=\<service\>.\<env\>.bluecatnetworks.com (if useful)  
-
-So, set CN to something readable (e.g., svc_livewire), but ClickHouse auth will key off the SAN URI. Use a URI identity like:
-
-* spiffe://bluecatnetworks.com/clickhouse/\<env\>/\<service\>
-
-Example:
-
-* spiffe://bluecatnetworks.com/clickhouse/prod/svc_livewire
-
-<br>
-
-### 1) Issue a client cert with SAN URI (OpenSSL)
-
-On your CA host (where ch_client_ca.key and ch_client_ca.crt live):
-
-```bash
-ENV="prod"
-SERVICE="svc_livewire"
-URI="spiffe://bluecatnetworks.com/clickhouse/${ENV}/${SERVICE}"
-
-# Key
-openssl genrsa -out "${SERVICE}.key" 2048
-chmod 600 "${SERVICE}.key"
-
-# CSR with SAN URI
-openssl req -new -key "${SERVICE}.key" \
-  -subj "/CN=${SERVICE}" \
-  -out "${SERVICE}.csr" \
-  -addext "subjectAltName = URI:${URI}" \
-  -addext "extendedKeyUsage = clientAuth"
-```
-
-Sign it with your client CA:  
-
-```
-openssl x509 -req -in "${SERVICE}.csr" \
-  -CA ch_client_ca.crt -CAkey ch_client_ca.key -CAcreateserial \
-  -out "${SERVICE}.crt" -days 825 -sha256
-chmod 644 "${SERVICE}.crt"
-
-```
-
-Verify the SAN URI is present:
-
-> openssl x509 -in "${SERVICE}.crt" -noout -subject -ext subjectAltName
-
-
-You should see URI:spiffe://bluecatnetworks.com/clickhouse/prod/svc_livewire.
-
-<br>
-
-### 2) Configure ClickHouse to require client certs (mTLS)
+### 1) Configure ClickHouse to require client certs (mTLS)
 
 You already have server TLS working. To require client certs and trust only your client CA, set:
 
-<verificationMode>strict</verificationMode>
+\<verificationMode\>strict\</verificationMode\>
 
-<caConfig>/etc/clickhouse-server/ch_client_ca.crt</caConfig>
+\<caConfig\>/etc/clickhouse-server/ch_client_ca.crt\</caConfig\>
 
-and typically <loadDefaultCAFile>false</loadDefaultCAFile>
+and typically \<loadDefaultCAFile\>false\</loadDefaultCAFile\>
 
 (Using the snippet you already have, just add/adjust those lines.)
 
@@ -629,7 +537,7 @@ Restart ClickHouse after changes.
 
 <br>
 
-### 3) Map SAN URI to a ClickHouse user
+### 2) Map SAN URI to a ClickHouse user
 
 **Create /etc/clickhouse-server/users.d/svc_livewire.xml:**
 
@@ -651,7 +559,7 @@ Restart ClickHouse (or reload config if you have that enabled).
 
 <br>
 
-### 4) Client-side (your clickhouse-cpp/OpenSSL client)
+### 3) Client-side (your clickhouse-cpp/OpenSSL client)
 
 In your SSL_CTX setup, add:
 

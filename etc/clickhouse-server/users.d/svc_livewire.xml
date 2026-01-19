@@ -1,0 +1,10 @@
+<clickhouse>
+  <users>
+    <svc_livewire>
+      <ssl_certificates>
+        <subject_alt_name>URI:spiffe://bluecatnetworks.com/clickhouse/svc_livewire</subject_alt_name>
+      </ssl_certificates>
+      <!-- set grants/roles/etc here -->
+    </svc_livewire>
+  </users>
+</clickhouse>

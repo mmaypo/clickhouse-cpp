@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#define USE_MTLS
+
 static std::string OpenSSLErrorString() {
     unsigned long err = ERR_get_error();
     if (err == 0) return {};
@@ -37,8 +39,8 @@ int main() {
     const std::string ca_pem = "/home/mandrews/clickhouse-pinned-ca-bundle.pem";     
 
     // Optional: for mutual TLS (mTLS). Leave empty if not required.
-    const std::string client_cert_file = "";
-    const std::string client_key_file  = "";
+    const std::string client_cert_file = "../../../../ch-client-ca/ch_client_ca.crt";
+    const std::string client_key_file  = "../../../../ch-client-ca/ch_client_ca.key";
 
     try {
         // Initialize OpenSSL (safe even on newer OpenSSL where it's mostly no-op)
@@ -62,11 +64,11 @@ int main() {
 
         #if defined(USE_MTLS)
         // Load client cert/key for mTLS
-        if (SSL_CTX_use_certificate_file(ctx.get(), client_cert_pem.c_str(), SSL_FILETYPE_PEM) != 1) {
+        if (SSL_CTX_use_certificate_file(ctx.get(), client_cert_file.c_str(), SSL_FILETYPE_PEM) != 1) {
             throw std::runtime_error("SSL_CTX_use_certificate_file failed: " + OpenSSLErrorString());
         }
 
-        if (SSL_CTX_use_PrivateKey_file(ctx.get(), client_key_pem.c_str(), SSL_FILETYPE_PEM) != 1) {
+        if (SSL_CTX_use_PrivateKey_file(ctx.get(), client_key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
             throw std::runtime_error("SSL_CTX_use_PrivateKey_file failed: " + OpenSSLErrorString());
         }
 
