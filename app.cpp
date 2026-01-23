@@ -1,4 +1,17 @@
 // app.cpp
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>  // InetNtopA, IN6_ADDR, etc.
+#endif
+
+#include <array>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -11,15 +24,11 @@
 #include "openssl/err.h"
 #include "openssl/ssl.h"
 
-#ifdef _WIN32
-#include <in6addr.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>  // InetNtopA / InetNtopW
-#else
-#include <arpa/inet.h>   // inet_ntop / inet_pton
-#include <netinet/in.h>  // in6_addr
+#ifndef _WIN32
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #endif
+
 
 constexpr const bool use_mtls = true;
 
