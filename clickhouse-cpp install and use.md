@@ -38,9 +38,9 @@
 
 > set OPENSSL_ROOT_DIR=D:\dev\working\github\livewire\third-party\openssl
 mkdir build . 
-cd build  
-cmake .. -DBUILD_BENCHMARK=ON -DWITH_OPENSSL=ON -DDEBUG_DEPENDENCIES=ON
-make
+  
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_BENCHMARK=ON -DWITH_OPENSSL=ON -DDEBUG_DEPENDENCIES=ON
+cmake --build build -j 8
 
 
 To ensure a successful link, ensure the following are added to your project's Additional Dependencies:
@@ -138,6 +138,8 @@ int main() {
 # Setup TLS  
 
 The previous section showed how to setup a POC code example with no TLS, this section shows changes needed to implement TLS with server certificate.  
+
+If you set up mTLS, make sure to rename `/etc/clickhouse-server/config.d/mtls.xml` or it will override the config.xml and the connection will fail.
 
 ## 1. Update Clickhouse Server configuration
 
